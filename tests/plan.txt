@@ -1,0 +1,55 @@
+Copy a file to remote DNS machine:
+
+scp -i ~/.ssh/id_ed25519.pub ~/Desktop/MN/Grad_School/Semesters/SP_2023/Networks_5700/Assignments/a5/dns_server.py promised_lan@cdn-dns.5700.network:/home/promised_lan
+
+
+SSH into remote DNS machine:
+
+ssh -i ~/.ssh/id_ed25519.pub promised_lan@cdn-dns.5700.network
+
+
+Wireshark DNS filter:
+
+Wireshark filter: dns && (ip.src_host == 192.168.1.190 || ip.dst_host == 192.168.1.190)
+Better: dns && ip.host == 198.74.61.103
+
+
+Run on server:
+./dnsserver -p 20030 -n cdn-dns.5700.network
+
+
+# DNS_SERVER_NAME = "cdn-dns.5700.network"
+# DNS_SERVER_PORT = 20030
+# ORIGIN_SERVER_NAME = "http://cs5700cdnorigin.ccs.neu.edu"
+# ORIGIN_SERVER_PORT = 8080
+# GOOGLE_PUBLIC_DNS = "8.8.8.8"
+
+
+Http server testing:
+
+GET /DD HTTP/1.1\r\nHost: cs5700cdnorigin.ccs.neu.edu:8080\r\n\r\n
+GET /BTS HTTP/1.1\r\nHost: cs5700cdnorigin.ccs.neu.edu:8080\r\n\r\n
+
+copy to http:
+scp -i ~/.ssh/id_ed25519.pub ~/Desktop/Northeastern\ MSCS/Courses/Spring\ 2023/CS\ 5700\ Networking/Project2/networks5700/Assignments/a5/httpserver promised_lan@cdn-http4.5700.network:/home/promised_lan
+
+copy to dns(ted):
+scp -i ~/.ssh/id_ed25519.pub ~/Desktop/Northeastern\ MSCS/Courses/Spring\ 2023/CS\ 5700\ Networking/Project2/networks5700/Assignments/a5/dnsserver promised_lan@cdn-dns.5700.network:/home/promised_lan
+
+dig dns with proper way
+dig cs5700cdn.example.com @cdn-dns.5700.network -p 20030
+
+Scamper:
+scamper -c "ping -c 10" -i 198.74.61.103 -o res.txt
+scamper -c "ping" -i 198.74.61.103 172.105.166.172 172.105.14.10 -o res.txt
+
+Geolocation number of request check
+https://app.abstractapi.com/api/ip-geolocation/pricing
+
+172.105.14.10 = toronto
+172.105.166.172 = sydney
+96.126.97.250 = fremont (Cali)
+50.116.39.110= atlanta
+172.105.229.35 = tokyo
+192.46.210.101 = mumbai
+139.162.235.21 = london

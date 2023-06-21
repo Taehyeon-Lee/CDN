@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+
+from dnslib import *
+import socketserver
+import socket
+import sys
+import requests
+import json
+import math
+import csv
+
+
+DNS_SERVER_NAME = "cdn-dns.5700.network"
+SERVING_DOMAIN_NAME = "cs5700cdn.example.com."
+REPLICA_SERVER_1_NAME = "cdn-http1.5700.network"
+REPLICA_SERVER_2_NAME = "cdn-http2.5700.network"
+REPLICA_SERVER_3_NAME = "cdn-http3.5700.network"
+REPLICA_SERVER_4_NAME = "cdn-http4.5700.network"
+REPLICA_SERVER_5_NAME = "cdn-http5.5700.network"
+REPLICA_SERVER_6_NAME = "cdn-http6.5700.network"
+REPLICA_SERVER_7_NAME = "cdn-http7.5700.network"
+
+
+# key: location | val: a list contains tuple of (replica server name, distance from client) in an order of closest from
+#                   furthest
+ip_table = {}
+# key: replica server name | val: a list contains ip address, latitude, and longitude of replica server
+replica_coordinate = {}
+# key: replica server name | val: average latency for the server
+replica_avg_latency = {'replica_server_1': '12.778', 'replica_server_2': '203.515', 'replica_server_3': '67.996',
+                        'replica_server_4': '23.628', 'replica_server_5': '147.934', 'replica_server_6': '274.269',
+                        'replica_server_7': '69.541'}
+
+
+
+'''
+    Handles DNS query communication through UDP
+'''
+class UDPHandler(socketserver.BaseRequestHandler):
+    '''
+    Builds and sends a DNS response to a received DNS query.
+    (If the query is out of the CDN domain, responds with RCODE.REFUSED)
+
+    PARAMETERS:
+    	- None
+
+    RETURNS:
+    	- None
+    '''
+    def handle(self):
+        print("\n------------------------------------------------------------")
+        # unload recv
+        data = self.request[0].strip()
+        client_sock = self.request[1]
+
+        # parse query
+        query = DNSRecord.parse(data)
+
+        # grab domain from query
+        domain = query.q.qname
+        print(f"[+] Client is attempting to reach {domain}")
+
+        # build dns reply
+        reply = query.reply()
+
+        # validate domain and query type
+        if domain != SERVING_DOMAIN_NAME:
+            reply.header.rcode = RCODE.REFUSED
+            print("[-] Client is requesting a domain that is outside of our CDN... Refusing...")
+        elif query.q.qtype != QTYPE.A:
+            # query is not for an A record - refuse
+            reply.header.rcode = RCODE.REFUSED
+            print("[-] Client is not requesting an A record... Refusing...")
+        else:
+            #######################################################################
+            ##########      serve ip address based on geolocation         #########
+            ##########      Return most closest server from the client    #########
+            client_ip = self.client_address[0]
+            ip_to_client = return_ip_to_client(client_ip, replica_coordinate)
+            #######################################################################
+            reply.add_answer(RR(domain, QTYPE.A, rdata=A(ip_to_client), ttl=9))
+            print(f"[+] Replying with DNS server address: " + ip_to_client)
+
+        try:
+            client_sock.sendto(reply.pack(), self.client_address)
+        except:
+            print("An error occurred while attempting to send the DNS response. Please try again...")
+
+
+'''
+Parses command line arguments and retrieves port used for the DNS server
+and the name of the CDN domain
+
+PARAMETERS:
+    - None
+
+RETURNS:
+    - port and CDN domain
+'''
+def parse_arguments():
+    try:
+        # loop through and grab port and host
+        for i in range(len(sys.argv)):
+            if sys.argv[i] == "-p":
+                port = sys.argv[i + 1]
+            elif sys.argv[i] == "-n":
+                cdn_domain = sys.argv[i + 1]
+
+        return int(port), cdn_domain
+    except:
+        exit("\nInvalid syntax. Run program with: \n./dnsserver -p <port number to be used> "
+             "-n <name of CDN domain>\nExiting...\n")
+
+'''
+Uses third party API to extract geolocation information about client
+
+PARAMETERS:
+    - request_ip: the client IP
+
+RETURNS:
+    - latitude and longitude of request_ip
+'''
+def get_geoloation(request_ip):
+    # get geolocation information through API for client
+    api_key = 'b41f43df008a4c17ad65cc166f5cb62f'
+    url = f'https://ipgeolocation.abstractapi.com/v1/?api_key={api_key}&ip_address={request_ip}'
+    response = requests.get(url)
+    geoloation = response.content.decode()
+
+    # parse json data and store into variables
+    json_geo = json.loads(geoloation)
+    longitude = json_geo['longitude']
+    latitude = json_geo['latitude']
+
+    return latitude, longitude
+
+'''
+Calculates the distance between client and replica server
+
+PARAMETERS:
+    - client_lat: the client IP's latitude
+    - client_long: the client IP's longitude
+    - replica_lat: the replica server IP's latitude
+    - replica_long: the replica server IP's longitude
+
+RETURNS:
+    - distance between client and replica server in km
+'''
+def calculate_distance(client_lat, client_long, replica_lat, replica_long):
+    R = 6371 # Earth's redius in km
+
+    # change to radian
+    lat_radian = math.radians(replica_lat - client_lat)
+    long_radian = math.radians(replica_long - client_long)
+
+    # calculate distance between client and replicat server and return in meters
+    a = math.sin(lat_radian / 2) * math.sin(lat_radian / 2) + math.cos(math.radians(client_lat)) * math.cos(
+        math.radians(replica_lat)) * math.sin(long_radian / 2) * math.sin(long_radian / 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+'''
+Reads replica_coordinates file and store information about replica servers
+
+PARAMETERS:
+    - None
+
+RETURNS:
+    - None
+'''
+def read_file_to_get_coordinate():
+    # read the file and parse data and store
+    with open('replica_coordinates.csv') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            replica_server_ip = row['replica_server_ip']
+            latitude = row['latitude']
+            longitude = row['longitude']
+            replica_server = row['replica_server']
+
+            replica_coordinate[replica_server] = [replica_server_ip, latitude, longitude]
+
+
+'''
+Adds client that already not existed in the cache. It gets geolocation from client 
+and calculate distance between replica servers and client. Then prepares/stores
+sorted distance into cache.
+
+PARAMETERS:
+    - client_ip: the IP address of client
+    - replica_server_dict: a dictionary that contains information(ip addresses, latitude,
+                            longitude, and name of server) of replica servers.
+
+RETURNS:
+    - None
+'''
+def handles_dns_cache(client_ip, replica_server_dict):
+    print("[+] New client! Getting Geoloation info from client now\n")
+    client_lat, client_long = get_geoloation(client_ip)
+    distance_list = []
+    print("[+] Preparing cache for the client now")
+    for key, value in replica_server_dict.items():
+        distance = calculate_distance(float(client_lat), float(client_long),
+                                      float(value[1]), float(value[2]))
+        distance_list.append((key, distance))
+
+    # sort replica server based on distance closest -> furthest
+    distance_list.sort(key=lambda x: x[1])
+
+    # add the new client into the cache
+    ip_table[client_ip] = distance_list
+
+
+'''
+Considers both distance and network latency as factors to choose which replica server ip to
+return to the client. Compare top 3 closest server's latency to average latency of those
+servers(already provided). Then decides which ip address to return to client
+
+PARAMETERS:
+    - client_ip: the IP address of client
+    - replica_server_dict: a dictionary that contains information(ip addresses, latitude,
+                            longitude, and name of server) of replica servers.
+
+RETURNS:
+    - IP address of the replica server
+'''
+def combine_geo_and_scamper(client_ip, replica_server_dict):
+    # read scamper file to get most recent latency
+    current_latency_dict = read_scamper_file()
+
+    distance_list = ip_table[client_ip]  # a sorted list in an order of distance from client small -> large
+    for i in range(3):
+        # checked top 3 distance server and all looked bad with overload then just return closest server
+        if i == 3:
+            return replica_server_dict[distance_list[0][0]][0]
+
+        current_replica_name = distance_list[i][0]
+        current_replica_dist = distance_list[i][1]
+        cur_replica_latency = float(current_latency_dict[current_replica_name])
+        cur_replica_avg_latency = float(replica_avg_latency[current_replica_name])
+
+        # if latency is negative -> no overload so return current replica node
+        if cur_replica_latency - cur_replica_avg_latency <= 0:
+            return replica_server_dict[current_replica_name][0]
+        # otherwise calculate proportional value of overload
+        else:
+            proportion = (cur_replica_latency - cur_replica_avg_latency) / cur_replica_avg_latency
+
+            # if overload is more than 50% and next closest server is within 3000km then check next server
+            if proportion >= 30.0 and (distance_list[i + 1][1] - current_replica_dist < 3000):
+                continue
+            # if either overload is less than 50% or next server is more than 3000km away return current
+            else:
+                return replica_server_dict[current_replica_name][0]
+
+'''
+Returns most closest replica server's ip address from the client
+
+PARAMETERS:
+    - client_ip: the IP address of client
+    - replica_server_dict: a dictionary that contains information(ip addresses, latitude,
+                            longitude, and name of server) of replica servers. (replica_coordinate)
+
+RETURNS:
+    - An ip address that is closest from the client.
+'''
+def return_ip_to_client(client_ip, replica_server_dict):
+    # considering only geoloacation
+    # check if the client ip already existed in cache
+    if client_ip in ip_table:
+        print("[+] Client is already in cache!\n")
+        replica_server_to_return = ip_table[client_ip][0][0]
+        return replica_server_dict[replica_server_to_return][0]
+    else:
+        # add new client to the cache
+        handles_dns_cache(client_ip, replica_server_dict)
+        replica_server_to_return = ip_table[client_ip][0][0]
+        return replica_server_dict[replica_server_to_return][0]
+
+
+'''
+Returns best replica server's ip address from the client using geo and scamper
+
+PARAMETERS:
+    - client_ip: the IP address of client
+    - replica_server_dict: a dictionary that contains information(ip addresses, latitude,
+                            longitude, and name of server) of replica servers. (replica_coordinate)
+
+RETURNS:
+    - An ip address considered both geoloation and network latency.
+'''
+def return_ip_to_client_combined_scamper(client_ip, replica_server_dict):
+    if client_ip in ip_table:
+        print("[+] Client is already in cache!\n")
+        ip = combine_geo_and_scamper(client_ip, replica_server_dict)
+    else:
+        # add new client to the cache
+        handles_dns_cache(client_ip, replica_server_dict)
+        ip = combine_geo_and_scamper(client_ip, replica_server_dict)
+
+    return ip
+
+
+
+'''
+Reads latency.txt file and store information about most recent latency of replica servers from dns server
+
+PARAMETERS:
+    - None
+
+RETURNS:
+    - A dictionary that contains replica server name as key and latency of the corresponding server as value
+'''
+def read_scamper_file():
+    latency = {}
+    try:
+        with open("latency.txt", 'r') as f:
+            lines = f.readlines()
+            # print(lines)
+            for line in lines:
+                line = line.strip("\n")
+                # print(line.split(" "))
+                name = line.split(" ")[0].strip(":")
+                cur_latency = line.split(" ")[1]
+                latency[name] = cur_latency
+            # print(latency)
+    except:
+        print("Make sure latency.txt file exists")
+
+    return latency
+
+
+# Main execution flow
+def main():
+    # make ip table and replica server coordinates
+    global ip_table
+    global replica_coordinate
+    global replica_avg_latency
+
+    # receive command line args
+    dns_port, cdn_domain = parse_arguments()
+
+    # read csv file that contains information about replica server and store
+    read_file_to_get_coordinate()  # at this point replica_coordinate finalized and is global
+
+    # grab server IP
+    dns_server_ip = socket.gethostbyname(DNS_SERVER_NAME)
+
+    # create DNS server
+    print("\n\n**************************** Welcome ****************************")
+    print(f"[+] Establishing DNS server at IP: {dns_server_ip} | port: {dns_port}...")
+    print("*****************************************************************\n")
+
+    with socketserver.UDPServer((dns_server_ip, dns_port), UDPHandler) as dns_server:
+        dns_server.serve_forever()
+
+
+if __name__ == '__main__':
+    main()

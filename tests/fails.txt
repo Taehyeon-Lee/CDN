@@ -1,0 +1,86 @@
+Gmail:
+Exception occurred during processing of request from ('155.33.134.6', 42565)
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/socketserver.py", line 316, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 347, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 360, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.10/socketserver.py", line 747, in __init__
+    self.handle()
+  File "/usr/lib/python3.10/http/server.py", line 432, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.10/http/server.py", line 400, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+  File "/usr/lib/python3.10/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+
+Spotify:
+Exception occurred during processing of request from ('155.33.134.6', 43582)
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/socketserver.py", line 316, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 347, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 360, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.10/socketserver.py", line 747, in __init__
+    self.handle()
+  File "/usr/lib/python3.10/http/server.py", line 432, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.10/http/server.py", line 400, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+  File "/usr/lib/python3.10/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+ConnectionResetError: [Errno 104] Connection reset by peer
+
+
+
+
+
+
+DNS:
+
+Traceback (most recent call last):
+  File "/home/promised_lan/./scamper_ping.py", line 113, in <module>
+    main()
+  File "/home/promised_lan/./scamper_ping.py", line 108, in main
+    scamper.write_latency_into_file()
+  File "/home/promised_lan/./scamper_ping.py", line 70, in write_latency_into_file
+    server_latency = self.ping_servers()
+  File "/home/promised_lan/./scamper_ping.py", line 49, in ping_servers
+    avg = last_line_split[4]
+
+
+
+Exception occurred during processing of request from ('155.33.132.67', 50207)
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/dnslib/dns.py", line 683, in parse
+    qname = buffer.decode_name()
+  File "/usr/lib/python3/dist-packages/dnslib/label.py", line 255, in decode_name
+    l = self.get(length)
+  File "/usr/lib/python3/dist-packages/dnslib/buffer.py", line 63, in get
+    raise BufferError("Not enough bytes [offset=%d,remaining=%d,requested=%d]" %
+dnslib.buffer.BufferError: Not enough bytes [offset=13,remaining=36,requested=99]
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/socketserver.py", line 316, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 347, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.10/socketserver.py", line 360, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.10/socketserver.py", line 747, in __init__
+    self.handle()
+  File "/home/promised_lan/./dnsserver", line 58, in handle
+    query = DNSRecord.parse(data)
+  File "/usr/lib/python3/dist-packages/dnslib/dns.py", line 107, in parse
+    questions.append(DNSQuestion.parse(buffer))
+  File "/usr/lib/python3/dist-packages/dnslib/dns.py", line 687, in parse
+    raise DNSError("Error unpacking DNSQuestion [offset=%d]: %s" % (
+dnslib.dns.DNSError: Error unpackin

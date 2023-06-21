@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+import gzip
+import os.path
+import sys
+from urllib.parse import urlparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.client import HTTPConnection
+
+
+'''
+Connecting to http server via ssh
+ssh -i ~/.ssh/id_ed25519.pub promised_lan@cdn-http4.5700.network
+'''
+
+
+ORIGIN_HOST = ""  # "129.10.111.154"
+ORIGIN_PORT = 8080
+REPLICA_SERVER_NAME = "cdn-http4.5700.network"  # "50.116.39.110"
+PORT = 20030
+
+file_set = set()
+ram_cache = {}
+temp_cache = {}
+remaining_memory_disk = 20.0
+remaining_memory_ram = 20.0
+
+
+'''
+Handles HTTP query communication through TCP between client and origin server
+'''
+class MyRequestHandler(BaseHTTPRequestHandler):
+    '''
+    Listens incoming connection and request from clients and when client
+    started to communicate forward the request to the origin and grabs the
+    data and send back to client
+    PARAMETERS:
+        - None
+    RETURNS:
+        - None
+    '''
+    def do_GET(self):
+        # for header, value in self.headers.items():
+        #     print(f'{header}: {value}')
+
+        # HTTP servers must respond to an HTTP request for "/grading/beacon"
+        # with a 204 status code.
+        if self.path == "/grading/beacon":
+            self.send_response(204)
+            self.end_headers()
+        # check if file is in OS file cache
+        elif self.path[1:] in file_set:
+            with open(self.path[1:], "rb") as f:
+                self.send_response(200)
+
+                # for header, value in self.request.getheaders():
+                #     # self.send_header(header, value)
+                #     print(self.send_header(header, value))
+                self.send_header('Connection', 'keep-alive')
+                self.send_header('Content-Encoding', 'gzip')
+
+                self.send_header('Content-Length', os.path.getsize(self.path[1:]))
+
+                self.end_headers()
+                self.wfile.write(f.read())
+        # check if file is in program ram cache
+        elif self.path[1:] in ram_cache:
+            resp_body = ram_cache[self.path[1:]]
+            self.send_response(200)
+            self.send_header('Content-Encoding', 'gzip')
+            self.end_headers()
+            self.wfile.write(resp_body)
+        # check if file is in program temp cache
+        elif self.path[1:] in temp_cache:
+            resp_body = temp_cache[self.path[1:]]
+            self.send_response(200)
+            self.send_header('Content-Encoding', 'gzip')
+            self.end_headers()
+            self.wfile.write(resp_body)
+        # request file from origin
+        else:
+            # send a GET request to the origin server
+            try:
+                conn = HTTPConnection(ORIGIN_HOST, ORIGIN_PORT)
+            except:
+                # when httpserver cannot connect to the origin due to wrong name or port
+                exit("Connection to the origin cannot be made check your origin server name and port number")
+            conn.request('GET', self.path)
+            resp = conn.getresponse()
+
+            # read the response body from the origin server
+            resp_body = resp.read()
+
+            # send the response headers back to the client
+            self.send_response(resp.status)
+            for header, value in resp.getheaders():
+                self.send_header(header, value)
+            self.end_headers()
+
+            # send the response body back to the client
+            self.wfile.write(resp_body)
+
+            # compress the data for caching
+            resp_body = gzip.compress(resp_body)
+            # TODO: remove a file from the temp cache if too big
+            # store compressed version in temp cache
+            temp_cache[self.path[1:]] = resp_body
+
+
+'''
+Parses command line arguments and retrieves port/origin used for the HTTP server
+PARAMETERS:
+    - None
+RETURNS:
+    - port and origin server
+'''
+def parse_arguments():
+    try:
+        # loop through and grab port and host
+        for i in range(len(sys.argv)):
+            if sys.argv[i] == "-p":
+                global PORT
+                PORT = sys.argv[i + 1]
+            elif sys.argv[i] == "-o":
+                url = sys.argv[i+1]
+                parsed_url = urlparse("http://" + url)
+                global ORIGIN_HOST
+                ORIGIN_HOST = parsed_url.hostname
+                global ORIGIN_PORT
+                ORIGIN_PORT = parsed_url.port
+
+        return int(PORT), ORIGIN_HOST, int(ORIGIN_PORT)
+    except:
+        exit("\nInvalid syntax. Run program with: \n./httpserver -p <port number to be used on replica server> "
+             "-o <name of cloud origin server with port number>\nExiting...\n")
+
+
+# Main execution flow
+if __name__ == "__main__":
+    # receive command line args
+    replica_port, origin_server_name, origin_port = parse_arguments()
+
+    replica_serv_add = (REPLICA_SERVER_NAME, replica_port)
+
+    file_set.add("Cleopatra")
+    file_set.add("Cleo")
+    file_set.add("Youtube.gz")
+
+    # TODO: retrieve and store top files in our caches
+    # load first ~20MB (ZIPPED) into file system # TODO: perhaps move this to deploy?
+    # load next ~20MB (ZIPPED) into ram cache
+    # load any remaining space (ZIPPED) into temp cache
+
+    # TODO: ALSO check the size of the storage used with each file loaded so we dont go over the 20MB limit
+
+    # TODO: Also confirm with prof that receiving gzip'd files is fine
+
+    print("\n\n**************************** Welcome *************************************")
+    print(f"[+] Establishing HTTP server: {REPLICA_SERVER_NAME} | port: {replica_port}...")
+    print("**************************************************************************\n")
+
+    http = HTTPServer(replica_serv_add, MyRequestHandler)
+    http.server_activate()
+    http.serve_forever()

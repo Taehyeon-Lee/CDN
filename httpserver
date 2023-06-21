@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+
+import gzip
+import os
+import socket
+import sys
+import threading
+import time
+from urllib.parse import urlparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.client import HTTPConnection
+
+
+ORIGIN_HOST = ""  # "129.10.111.154"
+ORIGIN_PORT = 8080
+REPLICA_SERVER_NAME = socket.gethostname()    # "cdn-http#.5700.network"
+REPLICA_IP = socket.gethostbyname(REPLICA_SERVER_NAME)
+PORT = 20030
+
+
+file_set = set()        # value: filename - tracks which files are allowed to be cached on disk
+ram_cache = {}          # key: filename | val: [(NON compressed length), (Compressed length), (compressed file body)]
+ram_allowed_q = []      # value: filename - tracks which files are allowed to be cached in RAM
+alert_mapping = {       # mst paths for forwarding ram cache alerts
+    "3": ["4"],
+    "4": ["1", "3"],
+    "1": ["4", "7"],
+    "7": ["1", "6"],
+    "6": ["5", "7"],
+    "5": ["2", "6"],
+    "2": ["5"],
+}
+
+
+'''
+Cascades POST messages to the next replica server in the MST of servers so they can cache a file that should be 
+in their ram cache. This happens only when a file was not already present in the current server's ram cache but
+is in the set of files that should be cached by ram. It serves the purpose of eliminating the need 
+for the remaining replica servers to request this file from origin as well.
+This happens only when the initial replica server didn't have the file in it's ram cache.
+If it already was in the ram cache, then it knows the remaining servers already have it to and
+does not send it to them for caching.
+
+PARAMETERS:
+    - target_file: the name of the file to cache
+    - full_len: the len of the uncompressed version of the file
+    - compressed_len: the len of the compressed version of the file
+    - compressed_body: the compressed byte string of the text
+    - received_from: the IP address of the previous hop according to the MST of replica servers
+
+RETURNS:
+    - None
+'''
+def cascade_to_other_replicas(target_file, full_len, compressed_len, compressed_body, received_from):
+    if received_from != REPLICA_IP:
+        replica_base_start = "cdn-http"
+        replica_base_end = ".5700.network"
+        curr_node = REPLICA_SERVER_NAME[len(replica_base_start):len(replica_base_start)+1]
+        # pass the info to the next replica node in the mst
+        # (but not to the node that sent it to this current node)
+        for node in alert_mapping[curr_node]:
+            dest_name = replica_base_start + node + replica_base_end
+            dest_addr = socket.gethostbyname(dest_name)
+            if dest_addr != received_from:
+                try:
+                    conn = HTTPConnection(dest_addr, PORT)
+                    headers = {"Content-Encoding": "gzip", "full_len": str(full_len),
+                               "compressed_len": str(compressed_len)}
+
+                    conn.request('POST', "/replica_dongle/" + target_file,
+                                 body=compressed_body, headers=headers)
+                except:
+                    pass
+
+
+'''
+Handles HTTP query communication through TCP between client and origin server
+'''
+class MyRequestHandler(BaseHTTPRequestHandler):
+    '''
+    Listens for incoming POST messages from fellow servers reporting RAM cached material and forwards the
+    information to the next hop(s) in the MST.
+    A server that GETs a file from origin sends the compressed body of the file to the next
+    replica server in the MST for caching IF AND ONLY IF it is one of the files in the ram_allowed_set.
+    This happens only when the initial replica server didn't have the file in its ram cache.
+    If it already was in the ram cache, then it knows the remaining servers already have it to and
+    does not send it to them for caching.
+
+    PARAMETERS:
+        - None
+
+    RETURNS:
+        - None
+    '''
+    def do_POST(self):
+        try:
+            # parse for file name
+            target_file = self.path[1:]
+            target_file = target_file[target_file.index("replica_dongle/") + len("replica_dongle/"):]
+            # check if file is from another replica for caching
+            if self.path == "/replica_dongle/" + target_file:
+                full_len = self.headers.get("full_len")
+                compressed_len = int(self.headers.get("compressed_len"))
+                compressed_body = b''
+                while True:
+                    chunk = self.rfile.read(1024)
+                    if not chunk:
+                        break
+                    compressed_body += chunk
+
+                # add the file to ram cache IF not corrupted
+                # and cascade to the next node in mst
+                if compressed_len == len(compressed_body) and target_file not in ram_cache:
+                    ram_cache[target_file] = [full_len, compressed_len, compressed_body]
+                    # send to the next node in mst
+                    cascade_to_other_replicas(target_file, full_len, compressed_len, compressed_body,
+                                              self.client_address[0])
+        except:
+            pass
+
+    '''
+    Listens incoming connection and request from clients and when client
+    started to communicate forward the request to the origin and grabs the
+    data and send back to client.
+
+    ***User can choose to serve the files compressed (default), or swap the commented lines
+    (see below) to first decompress the files before serving.
+
+    PARAMETERS:
+        - None
+
+    RETURNS:
+        - None
+    '''
+    def do_GET(self):
+        # HTTP servers must respond to an HTTP request for "/grading/beacon"
+        # with a 204 status code.
+        if self.path == "/grading/beacon":
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        # parse for file name
+        target_file = self.path[1:]
+        # check if file is in OS file cache
+        if target_file in file_set:
+            try:
+                with open(target_file + ".gz", "rb") as f:
+                    self.send_response(200)
+                    self.send_header('Connection', 'keep-alive')
+
+                    ###########################################################
+                    ####### activate lines to server COMPRESSED files #########
+                    self.send_header('Content-Encoding', 'gzip')
+                    self.send_header('Content-Length', str(os.path.getsize(target_file + ".gz")))
+                    self.end_headers()
+                    self.wfile.write(f.read())
+                    ####### end of lines for servering COMPRESSED files #######
+                    ###########################################################
+
+                    ###########################################################
+                    ####### activate lines to server DECOMPRESSED files #######
+                    # decompressed_body = gzip.decompress(f.read())
+                    # self.send_header('Content-Length', str(len(decompressed_body)))
+                    # self.end_headers()
+                    # self.wfile.write(decompressed_body)
+                    ####### end of lines for servering COMPRESSED files #######
+                    ###########################################################
+
+            except FileNotFoundError:
+                # Cache still populating - get from origin
+                # send a GET request to the origin server
+                try:
+                    conn = HTTPConnection(ORIGIN_HOST, ORIGIN_PORT)
+                    conn.request('GET', self.path)
+                    resp = conn.getresponse()
+
+                    # read the response body from the origin server
+                    resp_body = resp.read()
+
+                    # send the response headers back to the client
+                    self.send_response(resp.status)
+                    for header, value in resp.getheaders():
+                        self.send_header(header, value)
+                    self.end_headers()
+
+                    # send the response body back to the client
+                    self.wfile.write(resp_body)
+
+                except:
+                    self.send_response(404)
+                    self.end_headers()
+
+        # check if file is in program ram cache
+        elif target_file in ram_cache.keys():
+            resp_body = ram_cache[target_file][2]
+            self.send_response(200)
+            self.send_header('Connection', 'keep-alive')
+
+            ###########################################################
+            ####### activate lines to server COMPRESSED files #########
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', ram_cache[target_file][1])
+            self.end_headers()
+            self.wfile.write(resp_body)
+            ####### end of lines for servering COMPRESSED files #######
+            ###########################################################
+
+            ###########################################################
+            ####### activate lines to server DECOMPRESSED files #######
+            # self.send_header('Content-Length', ram_cache[target_file][0])
+            # self.end_headers()
+            # self.wfile.write(gzip.decompress(resp_body))
+            ####### end of lines for servering COMPRESSED files #######
+            ###########################################################
+
+        # request file from origin
+        else:
+            # send a GET request to the origin server
+            try:
+                conn = HTTPConnection(ORIGIN_HOST, ORIGIN_PORT)
+                conn.request('GET', self.path)
+                resp = conn.getresponse()
+
+                # read the response body from the origin server
+                resp_body = resp.read()
+
+                # send the response headers back to the client
+                self.send_response(resp.status)
+                for header, value in resp.getheaders():
+                    self.send_header(header, value)
+                self.end_headers()
+
+                # send the response body back to the client
+                self.wfile.write(resp_body)
+
+                # compress and cache only files that are in ram_allowed_set
+                # but not in ram cache yet
+                if target_file in ram_allowed_q and target_file not in ram_cache.keys():
+                    # get non-compressed version length
+                    full_len = len(resp_body)
+                    compressed_body = gzip.compress(resp_body)
+                    compressed_len = len(compressed_body)
+
+                    # add COMPRESSED version to RAM cache
+                    ram_cache[target_file] = [str(full_len), str(compressed_len), compressed_body]
+
+            except:
+                self.send_response(404)
+                self.end_headers()
+
+
+'''
+Parses command line arguments and retrieves port/origin used for the HTTP server
+
+PARAMETERS:
+    - None
+
+RETURNS:
+    - port and origin server
+'''
+def parse_arguments():
+    try:
+        # throws an error if there's no port or origin provided
+        if len(sys.argv) != 5:
+            exit("\nInvalid syntax. Run program with: \n./httpserver -p <port number to be used on replica server> "
+                 "-o <name of cloud origin server with port number>\nExiting...\n")
+
+        # loop through and grab port and host
+        for i in range(len(sys.argv)):
+            if sys.argv[i] == "-p":
+                global PORT
+                PORT = sys.argv[i + 1]
+            elif sys.argv[i] == "-o":
+                url = sys.argv[i + 1]
+                parsed_url = urlparse("http://" + url)
+                global ORIGIN_HOST
+                ORIGIN_HOST = parsed_url.hostname
+                global ORIGIN_PORT
+                ORIGIN_PORT = parsed_url.port
+
+        return int(PORT), ORIGIN_HOST, int(ORIGIN_PORT)
+    except:
+        exit("\nInvalid syntax. Run program with: \n./httpserver -p <port number to be used on replica server> "
+             "-o <name of cloud origin server with port number>\nExiting...\n")
+
+
+'''
+Starts the cascade of ram cache population.
+Starts at node 4 and follows the MST path to fill all replica ram caches
+without overloading the origin with requests
+
+PARAMETERS:
+    - None
+
+RETURNS:
+    - None
+'''
+def start_ram_cascade():
+    local_address = ('', 20035)
+    backup = ('', 20032)
+    remote_address = ('cs5700cdnorigin.ccs.neu.edu', 8080)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(local_address)
+        sock.connect(remote_address)
+    except OSError:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(backup)
+        sock.connect(remote_address)
+
+    request_start = b"GET /"
+    request_end = b" HTTP/1.1\r\nHost: cs5700cdnorigin.ccs.neu.edu:8080\r\n\r\n"
+    time.sleep(10)
+    for page in ram_allowed_q:
+        req = request_start + page.encode() + request_end
+        try:
+            sock.sendall(req)
+            response = b''
+            while True:
+                chunk = sock.recv(1024)
+                if b"\r\n\r\n" in chunk:
+                    response += chunk[chunk.index(b"\r\n\r\n") + 4:]
+                    continue
+                if b"</html>" in chunk:
+                    response += chunk
+                    break
+                if not chunk:
+                    break
+                response += chunk
+            full_len = str(len(response))
+            response = gzip.compress(response)
+            compressed_len = str(len(response))
+
+            # add COMPRESSED version to RAM cache
+            ram_cache[page] = [full_len, compressed_len, response]
+
+            if page == "Chloë_Grace_Moretz":
+                continue
+
+            # send the file to the other replicas for caching
+            cascade_to_other_replicas(page, full_len, compressed_len, response, None)
+        except:
+            continue
+
+    sock.close()
+
+
+# Main execution flow
+if __name__ == "__main__":
+    # receive command line args
+    replica_port, origin_server_name, origin_port = parse_arguments()
+
+    # bundle replica server's address
+    replica_serv_add = (REPLICA_SERVER_NAME, replica_port)
+
+    # start servers
+    http = HTTPServer(replica_serv_add, MyRequestHandler)
+    http.server_activate()
+
+    # start a new thread to run the server forever
+    server_thread = threading.Thread(target=http.serve_forever)
+    server_thread.start()
+
+    print("\n\n**************************** Welcome *************************************")
+    print(f"[+] Establishing HTTP server: {REPLICA_SERVER_NAME} | port: {replica_port}...")
+    print("**************************************************************************\n")
+
+    # add cached file names to file_set AND
+    # add ram cacheable file names to ram_allowed_set
+    with open("urls.txt", 'rb') as file:
+        rows = file.readlines()
+        for i, row in enumerate(rows):
+            # we cache 205 zipped files in each server's file system
+            if i < 206:
+                url = row.decode().strip()
+                page = url.rsplit('/', 1)[-1]
+                if page != "-":
+                    file_set.add(page)
+            # we cache the next ~75 zipped files in this program's RAM
+            if 206 <= i < 281:
+                url = row.decode().strip()
+                page = url.rsplit('/', 1)[-1]
+                ram_allowed_q.append(page)
+            if i == 400:
+                break
+
+    # begin ram cache cascading population
+    if REPLICA_SERVER_NAME == "cdn-http4.5700.network":
+        start_ram_cascade()
+
+    time.sleep(600)
+
+    # join the server thread to wait for it to finish
+    server_thread.join()

@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+'''
+    read existed/copied replica_coordinates.csv files and updates coordinates
+    of replica server if there is change in ip address.
+
+'''
+
+
+import socket
+import requests
+import json
+import time
+import csv
+import math # delete this later
+
+
+REPLICA_SERVER_1_NAME = "cdn-http1.5700.network"
+REPLICA_SERVER_2_NAME = "cdn-http2.5700.network"
+REPLICA_SERVER_3_NAME = "cdn-http3.5700.network"
+REPLICA_SERVER_4_NAME = "cdn-http4.5700.network"
+REPLICA_SERVER_5_NAME = "cdn-http5.5700.network"
+REPLICA_SERVER_6_NAME = "cdn-http6.5700.network"
+REPLICA_SERVER_7_NAME = "cdn-http7.5700.network"
+
+# key: replica_server | val: ip address, latitude, and longitude of replica server
+replica_coordinate = {}
+
+'''
+Uses third party API to extract geolocation information about client
+
+PARAMETERS:
+    - request_ip: the client IP
+
+RETURNS:
+    -
+'''
+def get_geoloation(request_ip):
+    # get geolocation information through API for client
+    api_key = 'b41f43df008a4c17ad65cc166f5cb62f'
+    url = f'https://ipgeolocation.abstractapi.com/v1/?api_key={api_key}&ip_address={request_ip}'
+    response = requests.get(url)
+    geoloation = response.content.decode()
+
+    # parse json data and store into variables
+    json_geo = json.loads(geoloation)
+    longitude = json_geo['longitude']
+    latitude = json_geo['latitude']
+
+    return latitude, longitude
+
+
+'''
+After read replica_coordinates file, checks replica ip addresses and updates
+geoloaction of server if the server is changed or moved then re-write the file
+
+PARAMETERS:
+    - 
+
+RETURNS:
+    -
+'''
+def update_file_if_any():
+    # print("in update function")
+    # print(replica_coordinate)
+    update = False
+    replica_server_names = [REPLICA_SERVER_1_NAME, REPLICA_SERVER_2_NAME, REPLICA_SERVER_3_NAME,
+                            REPLICA_SERVER_4_NAME, REPLICA_SERVER_5_NAME, REPLICA_SERVER_6_NAME,
+                            REPLICA_SERVER_7_NAME]
+    replica_server_ips = []
+    latitudes_list = []
+    longitudes_list = []
+    replica_server_list = []
+    write_date = []
+
+    # get ip addresses, latitudes, and longitude of replica servers and store
+    for i in range(len(replica_server_names)):
+        rep_ip = socket.gethostbyname(replica_server_names[i])
+        if rep_ip == replica_coordinate["replica_server_"+str(i+1)][0]: # no upadate needed
+            # store data in lists
+            replica_server_ips.append(replica_coordinate["replica_server_"+str(i+1)][0])
+            latitudes_list.append(replica_coordinate["replica_server_"+str(i+1)][1])
+            longitudes_list.append(replica_coordinate["replica_server_"+str(i+1)][2])
+            replica_server_list.append("replica_server_"+str(i+1))
+
+            # data to write file
+            write_date.append([rep_ip, latitudes_list[i], longitudes_list[i], replica_server_list[i]])
+        else:
+            print("[+] Replica Server IP is updated getting new geolocation information")
+            update = True  # update status
+            # store in ip and server lists
+            replica_server_ips.append(rep_ip)
+            replica_server_list.append("replica_server_" + str(i + 1))
+
+            # get latitude and longitude and store in lists
+            latitude, longitude = get_geoloation(rep_ip)
+            latitudes_list.append(latitude)
+            longitudes_list.append(longitude)
+
+            # data to write file
+            write_date.append([rep_ip, latitude, longitude, replica_server_list[i]])
+            time.sleep(1)
+
+    if update:
+        print("[+] Updating replica_coordinates.csv file...")
+
+        # Define the filename and headers for the CSV file
+        filename = 'replica_coordinates.csv'
+        headers = ['replica_server_ip', 'latitude', 'longitude', "replica_server"]
+
+        # Open the file in 'w' mode
+        with open(filename, mode='w', newline='') as file:
+            # Create a CSV writer object
+            writer = csv.writer(file)
+
+            # Write the headers to the CSV file
+            writer.writerow(headers)
+
+            # Write the data to the CSV file
+            for row in write_date:
+                writer.writerow(row)
+
+
+'''
+Read replica_coordinates file and store information about replica servers
+
+PARAMETERS:
+    - 
+
+RETURNS:
+    -
+'''
+def read_file_to_get_coordinate():
+    # read the file and parse data and store
+    with open('replica_coordinates.csv') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            replica_server_ip = row['replica_server_ip']
+            latitude = row['latitude']
+            longitude = row['longitude']
+            replica_server = row['replica_server']
+
+            replica_coordinate[replica_server] = [replica_server_ip, latitude, longitude]
+
+
+if __name__ == '__main__':
+    read_file_to_get_coordinate()
+    update_file_if_any()
+
+
+
