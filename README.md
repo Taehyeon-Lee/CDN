@@ -24,7 +24,7 @@ How we implemented our DNS and HTTP Servers:
 DNS - The program first parses command line arguments to receive the port and CDN domain that the CDN is running on. 
 Then, the IP addresses of the DNS server and the replica server are determined. Finally, a UDPHandler (from the 
 socketserver library) handles the receiving of UDP DNS packets, parses the data, and creates and sends the appropriate 
-response.
+response.<br/>
 After the milestone, a geolocation api was used to determine location of the client making the request. An algorithm 
 was implemented to determine which replica server the client is closest to, and the DNS response prioritizes that 
 replica as the ideal DNS response. We then cache the client's IP and the replica server it is closest to so that we 
@@ -39,7 +39,7 @@ HTTP - The program first parses command line arguments to receive the port, orig
 origin server is running on. Then, a RequestHandler (from the http.server library) handles the receiving of HTTP 
 requests from the client and forwards them to the origin server. Once the response is received back from the origin 
 server containing the http response, the data is finally forwarded back to the client using the socket that they had 
-requested the data from.
+requested the data from.<br/>
 After the milestone we implemented a caching strategy to serve files to the client as quickly as possible. We gzip all 
 files in the cache so that we can cache more files, and we use both disk storage as well as ram storage to be able to 
 cache slightly over 25% of the total files. We chose to cache all of the same files in every replica server since the 
